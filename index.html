@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>KNIFE & LADDER</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  canvas{width:100vw;height:100vh;display:block;image-rendering:pixelated;image-rendering:crisp-edges}
+  body::after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.07;
+    background:repeating-linear-gradient(to bottom,#000 0 1px,transparent 1px 3px)}
+</style></head><body>
+<canvas id="screen"></canvas>
+<script>
+"use strict";
+(function(){
+
+/* 1. 常量与调色板 */
+const W=256, H=224, N=W*H, TILE=16;
+const PAL=[
+ [0,0,0],[24,24,32],[72,72,80],[120,120,128],[168,168,176],[208,208,208],[255,255,255],
+ [0,72,96],[0,144,160],[0,192,200],[120,216,208],[168,200,176],[128,160,136],
+ [0,80,0],[0,136,0],[64,200,64],[152,224,96],
+ [72,40,16],[128,72,24],[176,112,48],[200,152,96],[240,200,150],
+ [120,0,0],[192,24,24],[240,80,64],[0,0,96],[48,72,200],[120,152,255],
+ [200,160,0],[255,216,64],[255,144,32],[96,32,96]];
+const K={BLACK:0,DARK:1,GRAY1:2,GRAY2:3,GRAY3:4,GRAY4:5,WHITE:6,
+  TEAL0:7,TEAL1:8,TEAL2:9,SKY0:10,SAGE0:11,SAGE1:12,
+  GREEN0:13,GREEN1:14,GREEN2:15,GREEN3:16,
+  BROWN0:17,BROWN1:18,BROWN2:19,SKIN0:20,SKIN1:21,
+  RED0:22,RED1:23,RED2:24,NAVY0:25,BLUE1:26,BLUE2:27,
+  GOLD0:28,GOLD1:29,ORANGE:30,PURPLE:31};
+
+/* 2. 帧缓冲与输出 */
+const cv=document.getElementById("screen"); cv.width=W; cv.height=H;
+const ctx=cv.getContext("2d",{alpha:false});
+const idata=ctx.createImageData(W,H);
+const out=new Uint32Array(idata.data.buffer);
+const fb=new Uint8Array(N);
+const LUT=new Uint32Array(32);
+const fx={bright:1,flash:0,flashColor:[255,40,40],shake:0};
+function postFx(f){
+  for(let i=0;i<32;i++){
+    let r=PAL[i][0]*f.bright, g=PAL[i][1]*f.bright, b=PAL[i][2]*f.bright;
+    if(f.flash>0){ r+=(f.flashColor[0]-r)*f.flash; g+=(f.flashColor[1]-g)*f.flash; b+=(f.flashColor[2]-b)*f.flash; }
+    LUT[i]=(255<<24)|((b|0)<<16)|((g|0)<<8)|(r|0);
+  }
+}
+function present(){ for(let i=0;i<N;i++) out[i]=LUT[fb[i]]; ctx.putImageData(idata,0,0); }
+postFx(fx);
+
+/* 3. 画图积木 */
+function px(x,y,c){ x=x|0; y=y|0; if(x>=0&&x<W&&y>=0&&y<H) fb[y*W+x]=c; }
+function rect(x,y,w,h,c){
+  x=x|0; y=y|0; w=w|0; h=h|0;
+  const x0=Math.max(0,x),x1=Math.min(W,x+w),y0=Math.max(0,y),y1=Math.min(H,y+h);
+  for(let j=y0;j<y1;j++){ const r=j*W; for(let i=x0;i<x1;i++) fb[r+i]=c; }
+}
+const BAYER=[0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
+const dz=(x,y)=>BAYER[((y&3)<<2)+(x&3)]/16;
+const mix=(x,y,c0,c1,t)=>dz(x,y)<t?c1:c0;
+function box(x,y,w,h,fill,line){ rect(x-1,y-1,w+2,h+2,line); rect(x,y,w,h,fill); }
+const off=document.createElement("canvas"); off.width=300; off.height=24;
+const octx=off.getContext("2d",{willReadFrequently:true});
+function text(str,x,y,size,idx,align){
+  octx.clearRect(0,0,off.width,off.height);
+  octx.font="bold "+size+"px \"MS Sans Serif\",Tahoma,Verdana,sans-serif";
+  octx.textBaseline="middle";
+  const w=Math.ceil(octx.measureText(str).width);
+  octx.fillStyle="#fff"; octx.fillText(str,2,off.height/2);
+  const bx=(align==="center")?Math.round(x-w/2):Math.round(x);
+  const d=octx.getImageData(0,0,off.width,off.height).data;
+  for(let j=0;j<off.height;j++) for(let i=0;i<off.width;i++)
+    if(d[(j*off.width+i)*4+3]>96) px(bx+i-2, y+j-12, idx);
+  return w;
+}
+
+/* 4. 人物绘制（22×40，a = 距身体正面距离，自动镜像） */
+function drawMan(x,y,face,col,st){
+  st=st||{}; const f=face>0?1:-1;
+  const R=(a,b,w,h,c)=>rect(f>0?x+22-a-w:x+a, y+b, w,h,c);
+  const B=(a,b,w,h,c)=>box(f>0?x+22-a-w:x+a, y+b, w,h,c,K.BLACK);
+  const P=(a,b,c)=>px(f>0?x+21-a:x+a, y+b, c);
+  if(st.dead){
+    R(-4,32,26,6,K.BLACK); R(-3,34,24,3,col.u); R(2,34,5,3,col.f); R(-3,37,3,3,K.BLACK);
+    R(18,34,4,3,col.h2);
+    return;
+  }
+  if(st.prone){
+    R(-3,31,26,8,K.BLACK); R(-2,33,23,5,col.u); R(18,32,9,7,col.f); R(17,30,10,3,col.h2);
+    R(1,34,4,2,col.belt); R(24,35,4,2,K.GRAY3); R(23,35,2,2,K.GRAY2);
+    return;
+  }
+  const leg=st.leg||0;
+  /* 腿 */
+  if(st.climb){
+    const up=(st.leg===0);
+    B(12,up?27:24,6,10,col.u2); B(4,up?24:27,6,10,col.u2);
+    R(12,up?35:32,7,4,K.BLACK); R(4,up?32:35,7,4,K.BLACK);
+  } else if(st.air){
+    B(12,25,6,11,col.u2); B(3,27,6,9,col.u2);
+    R(12,34,8,3,K.BLACK); R(2,34,8,3,K.BLACK);
+  } else {
+    const o=leg===1?2:0, o2=leg===3?2:0;
+    B(12+o,27,6,9,col.u2); R(12+o,34,7,4,K.BLACK);
+    B(4-o2,27,6,9,col.u2); R(3-o2,34,7,4,K.BLACK);
+  }
+  /* 后臂 */
+  if(st.climb){ const up=(st.leg===1); B(14,up?13:18,4,8,col.u2); R(14,up?21:26,4,3,col.f); }
+  /* 躯干 */
+  B(4,15,14,12,col.u);
+  R(5,17,12,2,col.u2);
+  R(9,19,4,7,col.u2);
+  B(5,24,12,3,col.belt);
+  R(7,25,8,1,K.GRAY2);
+  /* 脖子 + 头 */
+  R(9,13,4,3,col.f2);
+  B(6,5,10,9,col.f);
+  R(14,6,2,7,col.f2);
+  R(7,8,4,1,col.f2);
+  P(8,9,K.BLACK); P(9,9,K.BLACK);
+  R(7,11,3,1,col.f2);
+  /* 钢盔 */
+  B(5,1,12,4,col.h2);
+  B(4,4,14,2,col.h);
+  R(6,2,5,1,K.GRAY1);
+  /* 前臂 / 刀 */
+  if(st.knife){
+    B(2,16,5,9,col.u2);
+    R(-8,17,10,2,K.GRAY4);
+    R(-9,16,2,4,K.GRAY3);
+    R(1,15,2,6,col.belt);
+  } else {
+    B(2,16,5,10,col.u2);
+    B(3,24,3,3,col.f);
+  }
+}
+
+function drawPow(w,cam){
+  const sx=Math.round(w.x-cam)-4, sy=Math.round(w.y);
+  rect(sx+8,sy+3,3,36,K.BROWN0);
+  rect(sx+9,sy+3,1,36,K.BROWN1);
+  if(w.tied){
+    drawMan(sx,sy,1,{h:K.GOLD0,h2:K.GOLD1,f:K.SKIN0,f2:K.SKIN1,u:K.BLUE1,u2:K.GRAY4,belt:K.BROWN0},{leg:0});
+    rect(sx+2,sy+24,18,3,K.GRAY3);
+  } else {
+    drawMan(sx,sy,1,{h:K.GOLD0,h2:K.GOLD1,f:K.SKIN0,f2:K.SKIN1,u:K.BLUE1,u2:K.GRAY4,belt:K.BROWN0},{leg:((world.tick>>3)&3)});
+  }
+}
+
+/* 5. 音频 */
+let actx=null;
+function ensureAudio(){
+  try{ if(!actx) actx=new (window.AudioContext||window.webkitAudioContext)();
+    if(actx&&actx.state==="suspended"&&actx.resume) actx.resume().catch(function(){});
+  }catch(e){ actx=null; }
+}
+function tone(f,d,type,v,to){
+  if(!actx) return; const t0=actx.currentTime;
+  const o=actx.createOscillator(), g=actx.createGain();
+  o.type=type||"square"; o.frequency.setValueAtTime(f,t0);
+  if(to) o.frequency.exponentialRampToValueAtTime(Math.max(30,to),t0+d);
+  g.gain.setValueAtTime(v||0.06,t0); g.gain.exponentialRampToValueAtTime(0.0008,t0+d);
+  o.connect(g); g.connect(actx.destination); o.start(t0); o.stop(t0+d+0.02);
+}
+function noise(d,v){
+  if(!actx) return; const n=Math.floor(actx.sampleRate*d);
+  const b=actx.createBuffer(1,n,actx.sampleRate), ch=b.getChannelData(0);
+  for(let i=0;i<n;i++) ch[i]=(Math.random()*2-1)*(1-i/n);
+  const s=actx.createBufferSource(); s.buffer=b;
+  const g=actx.createGain(); g.gain.value=v||0.08;
+  s.connect(g); g.connect(actx.destination); s.start();
+}
+const SFX={ knife:()=>tone(880,0.05,"square",0.04,320),
+  hit:()=>{ tone(140,0.08,"square",0.07,60); noise(0.06,0.05); },
+  boom:()=>{ noise(0.26,0.14); tone(90,0.2,"sawtooth",0.08,40); },
+  pick:()=>{ tone(660,0.06,"square",0.05); setTimeout(()=>tone(990,0.08,"square",0.05),60); },
+  jump:()=>tone(420,0.07,"square",0.035,700),
+  die:()=>tone(300,0.5,"sawtooth",0.09,60),
+  shoot:()=>{ tone(220,0.1,"sawtooth",0.05,90); noise(0.08,0.04); },
+  rescue:()=>{ tone(520,0.07,"square",0.05); setTimeout(()=>tone(780,0.1,"square",0.05),70); },
+};
+
+/* 6. 手感数值 */
+const TUNE={speed:1.7, jump:-7.0, gravity:0.42, maxFall:8, climb:1.5,
+  atkTotal:20, atkFrom:16, atkTo:10, invuln:130, shakeTicks:8,
+  rush:0.72, prone:0.55, bullet:2.6, ebullet:1.9, lives:4};
+
+/* 7. 关卡：. 空  # 实心  H 梯子  ~ 水  ^ 尖刺  C 木箱 */
+const LEVEL_1={ name:"DOCK", rows:[
+    "............................................................",
+    "............................................................",
+    "............................................................",
+    "............................................................",
+    "............................................................",
+    "........................................#H######H...........",
+    ".........................................H......H...........",
+    "..............##H#################H##....H......H...........",
+    "................H.................H......H......H...........",
+    "................H.................H......H......H...........",
+    "................H.....C...........H......H......H...........",
+    "................H.....CC..........H...^^.H......H...........",
+    "###########~~######################################~~~######",
+    "###########~~######################################~~~######"
+  ],
+  waves:[{at:140,spawn:[["rush",300],["rush",80]]},
+         {at:280,spawn:[["rush",400,"d"],["rush",330]]},
+         {at:400,spawn:[["prone",470],["rush",420,"d"]]},
+         {at:520,spawn:[["rush",600],["rush",500,"d"],["prone",640]]},
+         {at:660,spawn:[["rush",760],["rush",700,"d"]]},
+         {at:780,spawn:[["prone",880],["rush",820]]}],
+  pows:[{x:406,y:152},{x:344,y:72},{x:800,y:152}],
+};
+
+/* 8. 解析 */
+function parseLevel(def){
+  return { map:def.rows.map(r=>r.split("")), mapW:def.rows[0].length, mapH:def.rows.length,
+    pixelWidth:def.rows[0].length*TILE, waves:def.waves, pows:def.pows, name:def.name };
+}
+
+/* 9. 世界 */
+let world=null, state="title", sceneT=0, flashT=0, best=0;
+const GROUND_TOP=12*TILE, DECK_TOP=7*TILE;
+function makePlayer(){ return {x:32,y:GROUND_TOP-40,w:14,h:40,vx:0,vy:0,onGround:false,face:1,
+  animT:0,leg:0,attack:0,hitSet:null,invuln:0,alive:true,knock:0,knockDir:1,climbing:false,shootCool:0}; }
+function resetWorld(){
+  const lv=parseLevel(LEVEL_1);
+  world={level:lv, map:lv.map, mapW:lv.mapW, mapH:lv.mapH, player:makePlayer(),
+    enemies:[], bullets:[], pows:[], parts:[], cam:0, tick:0, score:0, lives:TUNE.lives,
+    spawned:{}, rescued:0, fx:{bright:0,flash:0,flashColor:[255,40,40],shake:0}, respawn:0};
+  for(const pw of lv.pows) world.pows.push({x:pw.x, y:pw.y, tied:true});
+}
+
+/* 10. 物理 */
+function overlap(a,b){ return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y; }
+function tileAt(tx,ty){ if(tx<0||tx>=world.mapW) return "#"; if(ty<0||ty>=world.mapH) return "."; return world.map[ty][tx]; }
+function solidChar(ch){ return ch==="#"||ch==="C"; }
+function hitsSolid(e,falling,prevBottom){
+  const x0=Math.floor(e.x/TILE), x1=Math.floor((e.x+e.w-0.01)/TILE);
+  const y0=Math.floor(e.y/TILE), y1=Math.floor((e.y+e.h-0.01)/TILE);
+  for(let ty=y0;ty<=y1;ty++) for(let tx=x0;tx<=x1;tx++) if(solidChar(tileAt(tx,ty))) return true;
+  return false;
+}
+function moveX(e,dx){ if(!dx) return; e.x+=dx;
+  if(hitsSolid(e,false,0)){
+    if(dx>0) e.x=Math.floor((e.x+e.w)/TILE)*TILE-e.w-0.01;
+    else e.x=(Math.floor(e.x/TILE)+1)*TILE+0.01;
+    e.vx=0; }
+}
+function moveY(e,dy){ if(!dy) return; const pb=e.y+e.h; e.y+=dy;
+  if(hitsSolid(e,dy>0,pb)){
+    if(dy>0){ e.y=Math.floor((e.y+e.h)/TILE)*TILE-e.h-0.01; e.onGround=true; }
+    else { e.y=(Math.floor(e.y/TILE)+1)*TILE+0.01; }
+    e.vy=0; }
+}
+function ladderAt(e){
+  const cx=Math.floor((e.x+e.w/2)/TILE);
+  const y0=Math.floor((e.y+10)/TILE), y1=Math.floor((e.y+e.h)/TILE);
+  for(let ty=y0;ty<=y1;ty++) if(tileAt(cx,ty)==="H") return true;
+  return false;
+}
+function inWater(e){ return tileAt(Math.floor((e.x+e.w/2)/TILE),Math.floor((e.y+e.h-1)/TILE))==="~"; }
+function onSpike(e){ return tileAt(Math.floor((e.x+e.w/2)/TILE),Math.floor((e.y+e.h-1)/TILE))==="^"; }
+
+/* 11. 实体 */
+function updatePlayer(p){
+  if(!p.alive) return;
+  if(p.invuln>0) p.invuln--;
+  if(p.attack>0) p.attack--;
+  if(p.shootCool>0) p.shootCool--;
+  let ax=0; if(held("left")) ax-=1; if(held("right")) ax+=1;
+  if(ax!==0) p.face=ax;
+
+  if(!p.climbing && ladderAt(p) && (held("up")||held("down"))){ p.climbing=true; p.vy=0; p.vx=0; }
+  if(p.climbing){
+    const cx=(Math.floor((p.x+p.w/2)/TILE)+0.5)*TILE;
+    p.x += (cx-(p.x+p.w/2))*0.3;
+    p.vx=0;
+    p.vy = held("up")? -TUNE.climb : (held("down")? TUNE.climb : 0);
+    p.y += p.vy;
+    if(p.y<0){ p.y=0; }
+    if(held("up") && p.y<=DECK_TOP-p.h){
+      const leftSolid = solidChar(tileAt(Math.floor((p.x-10)/TILE),Math.floor(DECK_TOP/TILE)));
+      const rightSolid= solidChar(tileAt(Math.floor((p.x+p.w+10)/TILE),Math.floor(DECK_TOP/TILE)));
+      if(leftSolid||rightSolid){
+        p.y=DECK_TOP-p.h; p.climbing=false;
+        p.x += leftSolid? -12 : 12;
+      }
+    }
+    if(!p.climbing) return;
+    if(hitsSolid(p,false,0)) p.y -= p.vy;
+    if(held("down") && p.onGround && !ladderAtBelow(p)){ p.climbing=false; }
+    p.animT++; if(p.animT%8===0) p.leg=(p.leg+1)&1;
+    if(p.attack>0 && pressed("attack")){ }
+    if(inWater(p)||onSpike(p)) killPlayer();
+    if(pressed("attack")&&p.attack<=0){ p.attack=TUNE.atkTotal; p.hitSet=new Set(); SFX.knife(); }
+    return;
+  }
+
+  const sp = p.attack>0 ? TUNE.speed*0.3 : TUNE.speed;
+  if(p.knock>0){ p.knock--; p.vx=p.knockDir*3*(p.knock/8); }
+  else p.vx=ax*sp;
+  if(pressed("jump")&&p.onGround){ p.vy=TUNE.jump; p.onGround=false; SFX.jump(); }
+  if(pressed("attack")&&p.attack<=0){ p.attack=TUNE.atkTotal; p.hitSet=new Set(); SFX.knife(); }
+  p.vy=Math.min(p.vy+TUNE.gravity,TUNE.maxFall);
+  moveX(p,p.vx);
+  p.onGround=false;
+  moveY(p,p.vy);
+  if(p.vx!==0&&p.onGround){ p.animT++; if(p.animT%6===0) p.leg=(p.leg+1)&3; } else if(p.onGround) p.leg=0;
+
+  if(p.attack<=TUNE.atkFrom && p.attack>=TUNE.atkTo){
+    const kr = p.face>0? {x:p.x+10,y:p.y+14,w:22,h:18} : {x:p.x-18,y:p.y+14,w:22,h:18};
+    for(const e of world.enemies){
+      if(!e.alive||p.hitSet.has(e.id)) continue;
+      if(overlap(kr,e)){ p.hitSet.add(e.id); damageEnemy(e,1,p.face);
+        world.fx.flash=0.45; world.fx.flashColor=[255,255,255]; flashT=3; SFX.hit(); }
+    }
+    const tx=Math.floor((p.face>0?p.x+18:p.x-6)/TILE), ty=Math.floor((p.y+20)/TILE);
+    if(tileAt(tx,ty)==="C"){ world.map[ty][tx]="."; world.score+=25; SFX.boom(); }
+    for(const w of world.pows){
+      if(w.tied && overlap({x:w.x-6,y:w.y-6,w:22,h:44}, kr)){ w.tied=false; world.score+=500; SFX.rescue(); }
+    }
+  }
+  if(inWater(p)||onSpike(p)) killPlayer();
+}
+function ladderAtBelow(e){ return tileAt(Math.floor((e.x+e.w/2)/TILE),Math.floor((e.y+e.h+2)/TILE))==="H"; }
+
+function spawnEnemy(kind,x,y){
+  world.enemies.push({id:Math.random(),kind:kind,x:x,y:y,w:14,h:40,vx:0,vy:0,onGround:false,
+    face:-1,alive:true,hp:kind==="prone"?2:1,hitFlash:0,attack:0,prone:false,cool:30+((Math.random()*40)|0),
+    animT:0,leg:0,deadT:0,fireT:0});
+}
+function updateEnemies(){
+  const p=world.player;
+  for(const e of world.enemies){
+    if(e.hitFlash>0) e.hitFlash--;
+    if(!e.alive){ e.deadT++; continue; }
+    const dx=(p.x-e.x); e.face=dx<0?-1:1;
+    const ad=Math.abs(dx);
+    if(e.kind==="rush"){
+      e.prone=false;
+      if(ad>18 && !e.attack) e.vx=e.face*TUNE.rush; else e.vx=0;
+      if(ad<24 && e.cool<=0 && !e.attack){ e.attack=18; e.cool=96; }
+      if(e.cool>0) e.cool--;
+      if(e.attack>0){ e.attack--; if(e.attack===8) meleePlayer(e); }
+    } else {
+      if(e.fireT>0){
+        e.fireT--; e.vx=0; e.prone=true;
+        if(e.fireT%26===0){
+          spawnBullet(e.face>0?e.x+18:e.x-6, e.y+28, e.face*TUNE.ebullet, "enemy");
+          tone(240,0.05,"sawtooth",0.04,140);
+        }
+        if(e.fireT===0) e.prone=false;
+      } else {
+        e.prone=false;
+        if(ad>110) e.vx=e.face*TUNE.prone; else if(ad<70) e.vx=-e.face*TUNE.prone; else e.vx=0;
+        if(e.cool>0) e.cool--;
+        if(e.cool<=0 && ad<150){ e.cool=150; e.fireT=78; }
+      }
+    }
+    const aheadX=e.x+(e.face>0?e.w+4:-4);
+    const below=tileAt(Math.floor(aheadX/TILE),Math.floor((e.y+e.h+4)/TILE));
+    if(e.onGround&&(below==="."||below==="~")) e.vx=0;
+    e.vy=Math.min(e.vy+TUNE.gravity,TUNE.maxFall);
+    moveX(e,e.vx);
+    e.onGround=false;
+    moveY(e,e.vy);
+    if(e.vx!==0){ e.animT++; if(e.animT%9===0) e.leg=(e.leg+1)&3; }
+    if(inWater(e)){ e.alive=false; e.deadT=0; }
+  }
+  world.enemies=world.enemies.filter(e=>e.alive||e.deadT<100);
+}
+function meleePlayer(e){
+  const p=world.player;
+  if(!p.alive||p.invuln>0||p.climbing) return;
+  const kr=e.face>0?{x:e.x+12,y:e.y+10,w:20,h:22}:{x:e.x-18,y:e.y+10,w:20,h:22};
+  if(overlap(kr,p)) hurtPlayer(e.face);
+}
+function hurtPlayer(dir){
+  const p=world.player;
+  if(p.invuln>0||!p.alive) return;
+  world.lives--;
+  if(world.lives<=0){ killPlayer(true); return; }
+  p.invuln=TUNE.invuln; p.knock=8; p.knockDir=dir; p.vy=-3; p.climbing=false;
+  world.fx.flash=0.8; world.fx.flashColor=[255,40,40]; flashT=8;
+  world.fx.shake=TUNE.shakeTicks; SFX.hit();
+}
+function killPlayer(noLife){
+  const p=world.player;
+  if(!p.alive) return;
+  p.alive=false; p.climbing=false;
+  if(!noLife) world.lives=Math.max(0,world.lives-1);
+  world.fx.flash=0.7; world.fx.flashColor=[255,60,60]; flashT=10;
+  world.fx.shake=TUNE.shakeTicks; SFX.die(); world.respawn=70;
+}
+function respawnPlayer(){
+  const p=world.player;
+  p.alive=true; p.invuln=90; p.attack=0; p.vx=0; p.vy=0; p.climbing=false;
+  p.x=Math.max(32,Math.min(world.cam+50,world.level.pixelWidth-50));
+  p.y=(p.y<DECK_TOP+20 && p.y>-50)? DECK_TOP-p.h : GROUND_TOP-p.h;
+}
+function spawnBullet(x,y,vx,owner){ world.bullets.push({x:x,y:y,vx:vx,owner:owner,life:200,w:5,h:3}); }
+function updateBullets(){
+  const p=world.player;
+  for(const b of world.bullets){
+    b.x+=b.vx; b.life--;
+    const tx=Math.floor((b.x+(b.vx>0?b.w:0))/TILE), ty=Math.floor((b.y+1)/TILE);
+    const ch=tileAt(tx,ty);
+    if(solidChar(ch)){ b.life=0; if(ch==="C"){ world.map[ty][tx]="."; world.score+=25; }
+      world.parts.push({x:b.x,y:b.y,life:8}); SFX.boom(); }
+    if(b.owner==="player"){ for(const e of world.enemies){ if(e.alive&&overlap(b,e)){ b.life=0; damageEnemy(e,2,Math.sign(b.vx)); world.parts.push({x:b.x,y:b.y,life:10}); } } }
+    else if(p.alive&&p.invuln<=0&&overlap(b,p)){ b.life=0; hurtPlayer(Math.sign(b.vx)); }
+    if(b.y>H+8) b.life=0;
+  }
+  world.bullets=world.bullets.filter(b=>b.life>0);
+}
+function damageEnemy(e,dmg,dir){
+  e.hp-=dmg; e.hitFlash=6; e.vx=dir*1.6;
+  if(e.hp<=0&&e.alive){ e.alive=false; e.deadT=0; world.score+=(e.kind==="prone"?300:150); }
+}
+function updateWaves(){
+  const pxr=world.player.x;
+  world.level.waves.forEach((w,i)=>{
+    if(world.spawned[i]||pxr<=w.at) return;
+    world.spawned[i]=true;
+    for(const s of w.spawn) spawnEnemy(s[0],s[1], s[2]==="d"?DECK_TOP-40:GROUND_TOP-40);
+    tone(180,0.1,"square",0.04,120);
+  });
+}
+function updateCamera(){
+  const p=world.player;
+  const target=Math.max(0,Math.min(p.x-90,world.level.pixelWidth-W));
+  world.cam+=(target-world.cam)*0.18;
+}
+function updateFx(){
+  if(flashT>0){ flashT--; if(!flashT) world.fx.flash=0; }
+  else if(world.fx.flash>0){ world.fx.flash*=0.8; if(world.fx.flash<0.02) world.fx.flash=0; }
+  if(world.fx.shake>0) world.fx.shake--;
+  for(const pt of world.parts) pt.life--;
+  world.parts=world.parts.filter(pt=>pt.life>0);
+}
+
+function freePows(){
+  const p=world.player;
+  if(!p.alive) return;
+  for(const pw of world.pows){
+    if(!pw.tied) continue;
+    if(overlap({x:pw.x-2,y:pw.y+2,w:20,h:38}, p)){ pw.tied=false; world.score+=500; world.rescued++; SFX.rescue(); }
+  }
+}
+
+/* 12. 场景 */
+function stepPlay(){
+  world.tick++;
+  if(world.fx.bright<1) world.fx.bright=Math.min(1,world.fx.bright+1/36);
+  updatePlayer(world.player);
+  if(world.player.alive){ updateWaves(); freePows(); }
+  updateEnemies(); updateBullets(); updateCamera(); updateFx();
+  if(!world.player.alive){
+    world.respawn--;
+    if(world.respawn<=0){
+      if(world.lives<=0){ state="gameover"; sceneT=0; best=Math.max(best,world.score); }
+      else respawnPlayer();
+    }
+  }
+  if(world.player.x>world.level.pixelWidth-40){ state="clear"; sceneT=0; best=Math.max(best,world.score); }
+}
+
+/* 13. 绘制 */
+function drawSky(){
+  for(let y=0;y<H;y++){
+    if(y<60){ const t=y/60; for(let x=0;x<W;x++) fb[y*W+x]=mix(x,y,K.TEAL1,K.TEAL2,t*0.9); }
+    else if(y<108){ const t=(y-60)/48; for(let x=0;x<W;x++) fb[y*W+x]=mix(x,y,K.TEAL2,K.SAGE0,t); }
+    else rect(0,y,W,1,K.SAGE0);
+  }
+}
+function drawBrick(x,y,w){
+  rect(x,y,w,16,K.BLACK);
+  for(let i=0;i<w;i+=8){
+    rect(x+i,y+1,6,6,K.RED0); rect(x+i,y+9,6,6,K.RED0);
+    px(x+i+1,y+2,K.RED1); px(x+i+2,y+2,K.RED1);
+  }
+}
+function drawTerrain(){
+  const cam=Math.round(world.cam)+(world.shakeX||0);
+  const tx0=Math.max(0,Math.floor(cam/TILE)-1), tx1=Math.min(world.mapW-1,Math.ceil((cam+W)/TILE));
+  for(let tx=tx0;tx<=tx1;tx++) for(let ty=0;ty<world.mapH;ty++){
+    const ch=world.map[ty][tx]; if(ch===".") continue;
+    const sx=tx*TILE-cam, sy=ty*TILE;
+    if(ch==="#"){
+      const above=tileAt(tx,ty-1);
+      if(ty>=12){
+        drawBrick(sx,sy,TILE);
+        if(above!=="#"&&above!=="C"){ rect(sx,sy,TILE,3,K.SAGE1); rect(sx,sy+3,TILE,1,K.BLACK); }
+      } else {
+        rect(sx,sy,TILE,TILE,K.BLACK);
+        rect(sx,sy,TILE,4,K.RED0);
+        rect(sx,sy,TILE,1,K.RED1);
+        rect(sx,sy+TILE-3,TILE,3,K.RED0);
+        for(let k=0;k<7;k++){ px(sx+1+k,sy+4+k,K.RED1); px(sx+14-k,sy+4+k,K.RED1); }
+        rect(sx,sy+TILE-1,TILE,1,K.BLACK);
+        rect(sx,sy+TILE,TILE,10,K.RED0);
+        for(let k=0;k<7;k++){ px(sx+2+k,sy+TILE+1+k,K.RED1); px(sx+13-k,sy+TILE+1+k,K.RED1); }
+        rect(sx,sy+TILE+9,TILE,2,K.BLACK);
+      }
+    } else if(ch==="H"){
+      rect(sx+2,sy,2,TILE,K.GRAY2); rect(sx+11,sy,2,TILE,K.GRAY2);
+      rect(sx+2,sy+3,11,2,K.GRAY3); rect(sx+2,sy+11,11,2,K.GRAY3);
+    } else if(ch==="~"){
+      rect(sx,sy,TILE,TILE,K.TEAL0);
+      if(tileAt(tx,ty-1)!=="~"){ rect(sx,sy,TILE,2,K.TEAL2); rect(sx,sy+2,TILE,1,K.TEAL1); }
+      const ph=(world.tick>>3)&1;
+      rect(sx+((ph)?2:6),sy+4,6,1,K.TEAL2);
+      rect(sx+((ph)?8:1),sy+11,5,1,K.TEAL1);
+    } else if(ch==="C"){
+      rect(sx,sy,TILE,TILE,K.BLACK);
+      rect(sx+1,sy+1,14,14,K.BROWN1);
+      rect(sx+1,sy+1,14,2,K.BROWN2);
+      for(let k=0;k<6;k++){ px(sx+2+k,sy+3+k,K.BROWN0); px(sx+13-k,sy+3+k,K.BROWN0); }
+    } else if(ch==="^"){
+      for(let k=0;k<4;k++){
+        const bx=sx+k*4;
+        for(let j=0;j<10;j++){ const ww=Math.max(1,Math.floor((10-j)/3)); rect(bx+2-(ww>>1),sy+4+j,ww,1,K.GRAY4); }
+      }
+    }
+  }
+  // 终点
+  const fx0=world.level.pixelWidth-30-cam;
+  if(fx0>-24&&fx0<W+24){
+    rect(fx0,GROUND_TOP-56,3,56,K.GRAY3);
+    for(let k=0;k<14;k++) rect(fx0+3,GROUND_TOP-56+k,20-(k>>1),1,(k<7)?K.RED1:K.GREEN2);
+  }
+}
+
+function drawEnemy(e,cam){
+  const sx=Math.round(e.x-cam)-4, sy=Math.round(e.y);
+  const col = e.kind==="prone" ? {h:K.GRAY2,h2:K.GRAY3,f:K.SKIN0,f2:K.SKIN1,u:K.GRAY4,u2:K.GRAY3,belt:K.BROWN0}
+    : {h:K.GRAY3,h2:K.GRAY2,f:K.SKIN0,f2:K.SKIN1,u:K.BLUE1,u2:K.BLUE2,belt:K.BLACK};
+  if(e.kind==="prone"){
+    const c2={h:K.GRAY2,h2:K.GRAY3,f:K.SKIN0,f2:K.SKIN1,u:K.BROWN2,u2:K.BROWN1,belt:K.BROWN0};
+    drawMan(sx,sy,e.face,c2,{prone:e.prone,dead:!e.alive,leg:e.leg,air:false});
+  } else {
+    drawMan(sx,sy,e.face,col,{dead:!e.alive,leg:e.leg,knife:e.attack>0,air:!e.onGround});
+  }
+  if(e.hitFlash>0){
+    const bx=Math.round(e.x-cam)-4, by=Math.round(e.y);
+    for(let j=by;j<by+40;j++) for(let i=bx;i<bx+24;i++){
+      if(i<0||i>=W||j<0||j>=H) continue;
+      const c=fb[j*W+i];
+      if(c!==K.BLACK&&c!==K.TEAL0&&c!==K.SAGE0&&c!==K.TEAL1&&c!==K.TEAL2&&c!==K.RED0&&c!==K.RED1) fb[j*W+i]=K.WHITE;
+    }
+  }
+}
+function drawBanner(){
+  const t=world.tick;
+  if(t>110) return;
+  const y=88, h=44;
+  if(t>86 && (t&1)) return;
+  rect(0,y,W,h,K.BLACK);
+  rect(0,y,W,1,K.RED1); rect(0,y+h-1,W,1,K.RED1);
+  text("STAGE 1", W/2, y+16, 15, K.WHITE, "center");
+  text("DOCK", W/2, y+33, 12, K.ORANGE, "center");
+}
+function drawHUD(){
+  rect(0,0,W,22,K.BLACK);
+  text("1UP", 6, 9, 9, K.RED2);
+  text(String(world.score).padStart(6,"0"), 32, 9, 9, K.WHITE);
+  text("HI", 104, 9, 9, K.RED2);
+  text(String(Math.max(best,world.score)).padStart(6,"0"), 122, 9, 9, K.WHITE);
+  text("STAGE 01", W-58, 9, 9, K.ORANGE);
+  for(let i=0;i<world.lives;i++){
+    const bx=6+i*11;
+    rect(bx,14,8,3,K.GREEN1); rect(bx+1,17,6,5,K.SKIN0); rect(bx+2,19,1,1,K.BLACK); rect(bx+5,19,1,1,K.BLACK);
+  }
+}
+function drawWorld(){
+  world.shakeX = world.fx.shake>0 ? ((world.fx.shake&2)?2:-2) : 0;
+  drawSky(); drawTerrain();
+  const cam=Math.round(world.cam)+world.shakeX;
+  for(const w of world.pows) if(w.x-cam>-30&&w.x-cam<W+30) drawPow(w,cam);
+  for(const b of world.bullets){ const sx=Math.round(b.x-cam); if(sx<-8||sx>W+8) continue;
+    rect(sx,Math.round(b.y),5,2,b.owner==="player"?K.GOLD1:K.RED2); }
+  for(const e of world.enemies){ if(e.x-cam<-40||e.x-cam>W+30) continue; drawEnemy(e,cam); }
+  for(const pt of world.parts){ const sx=Math.round(pt.x-cam), sy=Math.round(pt.y), r=Math.max(1,(pt.life/3)|0);
+    rect(sx-r,sy-r,r*2,r*2,(pt.life&2)?K.GOLD1:K.WHITE); }
+  const p=world.player;
+  if(p.alive&&!(p.invuln>0&&((world.tick>>2)&1))){
+    drawMan(Math.round(p.x-cam)-4, Math.round(p.y), p.face,
+      {h:K.GREEN1,h2:K.GREEN2,f:K.SKIN0,f2:K.SKIN1,u:K.GREEN1,u2:K.GREEN0,belt:K.BROWN0},
+      {leg:p.leg,knife:p.attack>0,climb:p.climbing,air:!p.onGround&&!p.climbing});
+  }
+}
+function drawTitle(){
+  for(let y=0;y<H;y++){ const t=y/H; for(let x=0;x<W;x++) fb[y*W+x]=mix(x,y,K.TEAL0,K.BLACK,t*0.8); }
+  text("KNIFE", W/2-58, 58, 26, K.GREEN2, "center");
+  text("&", W/2, 58, 26, K.WHITE, "center");
+  text("LADDER", W/2+64, 58, 26, K.GREEN2, "center");
+  text("256x224 帧缓冲", W/2, 96, 12, K.SAGE0, "center");
+  if(((sceneT>>4)&1)===0) text("PRESS ENTER", W/2, 132, 14, K.WHITE, "center");
+  text("←→ 移动   ↑↓ 梯子   SPACE 跳   J 刺刀", W/2, 176, 12, K.GRAY4, "center");
+  text("救出战俘  抵达终点", W/2, 194, 12, K.GRAY4, "center");
+}
+function drawGameOver(){
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++) fb[y*W+x]=mix(x,y,K.BLACK,K.RED0,y/H*0.35);
+  text("GAME OVER", W/2, 84, 24, K.RED2, "center");
+  text("SCORE "+world.score, W/2, 118, 12, K.WHITE, "center");
+  if(((sceneT>>4)&1)===0) text("PRESS ENTER", W/2, 158, 13, K.GOLD1, "center");
+}
+function drawClear(){
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++) fb[y*W+x]=mix(x,y,K.TEAL0,K.SAGE0,y/H*0.5);
+  text("AREA CLEAR", W/2, 84, 22, K.WHITE, "center");
+  text("SCORE "+world.score, W/2, 116, 12, K.BLACK, "center");
+  text("POW RESCUED "+world.rescued+"/3", W/2, 134, 11, K.BLACK, "center");
+  if(((sceneT>>4)&1)===0) text("PRESS ENTER", W/2, 156, 12, K.BLACK, "center");
+}
+
+/* 14. 输入 */
+const keys=new Set(), pressedSet=new Set();
+const KEYMAP={ArrowLeft:"left",ArrowRight:"right",KeyA:"left",KeyD:"right",
+  ArrowUp:"up",ArrowDown:"down",KeyW:"up",KeyS:"down",
+  Space:"jump",KeyJ:"attack",KeyZ:"attack",Enter:"start"};
+const held=(n)=>keys.has(n), pressed=(n)=>pressedSet.has(n);
+addEventListener("keydown",(e)=>{ const k=KEYMAP[e.code]; if(!k) return;
+  e.preventDefault(); if(!keys.has(k)) pressedSet.add(k); keys.add(k); ensureAudio(); });
+addEventListener("keyup",(e)=>{ const k=KEYMAP[e.code]; if(k){ e.preventDefault(); keys.delete(k); } });
+addEventListener("pointerdown",()=>{ ensureAudio(); if(state!=="play") pressedSet.add("start"); });
+
+/* 15. 主循环 */
+const STEP=1000/60; let acc=0, last=performance.now();
+const DEBUG=/debug/.test(location.search);
+function step(){
+  if(state==="title"){ sceneT++; if(pressed("start")){ resetWorld(); state="play"; sceneT=0; } }
+  else if(state==="play"){ stepPlay(); }
+  else { sceneT++; if(pressed("start")){ state="title"; sceneT=0; } }
+  pressedSet.clear();
+}
+function render(){
+  if(state==="title"){ drawTitle(); postFx({bright:1,flash:0,flashColor:[255,40,40],shake:0}); }
+  else if(state==="gameover"){ drawGameOver(); postFx({bright:1,flash:0,flashColor:[255,40,40],shake:0}); }
+  else if(state==="clear"){ drawClear(); postFx({bright:1,flash:0,flashColor:[255,40,40],shake:0}); }
+  else { drawWorld(); drawHUD(); drawBanner(); if(DEBUG) text("T"+world.tick, 4, H-8, 9, K.GRAY3); postFx(world.fx); }
+  present();
+}
+function loop(now){
+  acc+=Math.min(now-last,250); last=now;
+  let n=0; while(acc>=STEP&&n<5){ step(); acc-=STEP; n++; }
+  if(n===5) acc=0;
+  render(); requestAnimationFrame(loop);
+}
+
+/* 16. 启动 */
+resetWorld();
+requestAnimationFrame(loop);
+window.__debug={ get world(){return world;}, get state(){return state;}, keys:keys };
+})();
+</script>
+</body>
+</html>
