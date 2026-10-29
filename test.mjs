@@ -62,6 +62,35 @@ function check(name, cond, detail) {
   else { fail++; console.log('  FAIL ' + name + (detail ? '  → ' + detail : '')); }
 }
 
+/* 关卡完整性（静态断言，不启动游戏）——改关卡数据时最容易犯的错都在这里 */
+{
+  const lvl = W().level;
+  const lens = new Set(lvl.map.map(r => r.length));
+  check('地图每行等长', lens.size === 1, [...lens].join(','));
+  const CHARS = new Set(['.', '#', 'B', 'C', 'H', '^', '~']);
+  let badChar = null;
+  lvl.map.forEach((row, ty) => row.forEach((c, tx) => { if (!CHARS.has(c)) badChar = c + '@' + tx + ',' + ty; }));
+  check('地图只用已知字符', badChar === null, badChar);
+  let badWave = null;
+  lvl.waves.forEach((w, i) => {
+    if (w.at <= 0 || w.at >= lvl.pixelWidth) badWave = 'wave' + i + ' at=' + w.at;
+    w.spawn.forEach(s => { if (s[1] <= 0 || s[1] >= lvl.pixelWidth) badWave = 'wave' + i + ' spawn=' + s[1]; });
+  });
+  check('波次坐标都在地图内', badWave === null, badWave);
+  let badPow = null;
+  lvl.pows.forEach((pw, i) => {
+    const tx = Math.floor((pw.x + 7) / 16);
+    const feetRow = Math.floor((pw.y + 40) / 16);
+    const headRow = Math.floor((pw.y + 4) / 16);
+    const under = lvl.map[feetRow] && lvl.map[feetRow][tx];
+    const head = lvl.map[headRow] && lvl.map[headRow][tx];
+    if (under !== '#' && under !== 'B') badPow = i + ':脚下不结实';
+    if (head === '#' || head === 'B') badPow = i + ':头在墙里';
+  });
+  check('战俘落点有效（脚下结实、头不穿墙）', badPow === null, badPow);
+  check('出生点脚下是地面', lvl.map[12][2] === '#', lvl.map[12][2]);
+}
+
 /* 4. 用例 */
 
 run(5);
