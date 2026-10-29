@@ -60,6 +60,29 @@ ctx.putImageData(img, 0, 0);
 index.html   游戏本体（单文件，零依赖，1400+ 行）
 ```
 
+
+## 开发
+
+### 跑测试
+
+```bash
+node test.mjs          # 无头逻辑测试：不开浏览器，在 Node 里直接驱动 step()，20 项断言
+```
+
+原理是把 `index.html` 的脚本抽出来、喂一个假 DOM（canvas/定时器全是桩），然后手动逐帧推进。游戏代码不用改任何逻辑，测试是外挂的。
+
+### 视觉冒烟
+
+```bash
+npm i puppeteer-core
+node tools/visual-test.mjs    # 用真实浏览器截图到 shots/，并检查控制台 0 报错
+```
+
+### 调试参数
+
+- 地址加 `?debug` → 右下角显示 tick 计数
+- `window.__debug` → 暴露 `world / state / keys / pressed / step / render`，控制台可直接驱动
+
 ## 已知不足
 
 - 只有一关，没有关底 Boss
