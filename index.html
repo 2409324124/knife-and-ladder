@@ -263,6 +263,16 @@ const TORSO_CLIMB2=[
 
 /* 修长腿部与战靴 (13行, 宽24, 严格在 r=12 踩实地面 y+39，完美复刻 FC 绿色兵团长腿奔跑感) */
 /* 蹲姿腿部 (10 行, 脚踩 y+23, 配合 24px 蹲姿盒) */
+/* 蹲行：以 LEGS_CROUCH 为基准，把左右两半下半截反向平移，得到迈步帧 */
+function shiftHalf(row,dxL,dxR){
+  const a=row.slice(0,12), b=row.slice(12);
+  const L = dxL<0 ? a.slice(-dxL)+" ".repeat(-dxL) : " ".repeat(dxL)+a.slice(0,12-dxL);
+  const R = dxR<0 ? b.slice(-dxR)+" ".repeat(-dxR) : " ".repeat(dxR)+b.slice(0,12-dxR);
+  return L+R;
+}
+function crouchFrame(arr,dxL,dxR,from){
+  return arr.map((r,i)=> i<from ? r : shiftHalf(r,dxL,dxR));
+}
 const LEGS_CROUCH=[
 "....DUUUUD..DUUUD.......",
 "...DUUUUUD..DUUUD.......",
@@ -275,6 +285,8 @@ const LEGS_CROUCH=[
 "DDDDD........DDDDD......",
 "DDDDD........DDDDDD....."
 ];
+const LEGS_CROUCH_A = crouchFrame(LEGS_CROUCH,-2, 2,4);
+const LEGS_CROUCH_B = crouchFrame(LEGS_CROUCH, 2,-2,4);
 const LEGS_IDLE=[
   ".....DUUUD.DUUUD........",
   ".....DUUUD.DUUUD........",
@@ -500,10 +512,15 @@ function drawMan(x,y,face,col,st){
   }
   if(st.prone){
     const pr = isSnake ? (st.knife ? PRONE_SNAKE_KNIFE : PRONE_SNAKE) : PRONE_BODY;
-    /* 12 行匍匐精灵：机体盒只有 14 高，绘制在 y+2，底边贴地 */
-    drawAscii(pr, flip?x-6:x-4, y+2, flip, pal);
+    /* 12 行匍匐精灵：机体盒只有 14 高，绘制在 y+2，底边贴地
+       爬行帧：1 帧前探、3 帧后收、2 帧压身，形成"拖着自己往前"的节奏 */
+    const plg = st.leg||0;
+    const wig = plg===1 ? 1 : (plg===3 ? -1 : 0);
+    const pbob = plg===2 ? 1 : 0;
+    const bx = (flip?x-6:x-4) + wig;
+    drawAscii(pr, bx, y+2+pbob, flip, pal);
     if(isSnake && st.knife){
-      const kx = flip ? (x-12) : (x+26);
+      const kx = flip ? (bx-6) : (bx+30);
       rect(kx, y+10, 7, 3, K.BLACK);
       rect(kx+(flip?1:0), y+11, 6, 1, K.WHITE);
     }
@@ -511,10 +528,13 @@ function drawMan(x,y,face,col,st){
   }
   if(st.crouch){
     const ch = isSnake ? HEAD_SNAKE_1 : HEAD_ENEMY;
-    drawAscii(ch, flip?x+1:x+3, y, flip, pal);
-    drawAscii(TORSO_IDLE, flip?x-2:x, y+8, flip, pal);
-    drawAscii(LEGS_CROUCH, flip?x-2:x, y+14, flip, pal);
-    if(st.hasRpg) drawAscii(RPG_OVERLAY, x-1, y+8, flip, pal);
+    const lg = st.leg||0;
+    const bob = (lg===1||lg===3) ? 1 : 0;
+    const legs = lg===1 ? LEGS_CROUCH_A : (lg===3 ? LEGS_CROUCH_B : LEGS_CROUCH);
+    drawAscii(legs, flip?x-2:x, y+18, flip, pal);
+    drawAscii(TORSO_IDLE, flip?x-2:x, y+9-bob, flip, pal);
+    drawAscii(ch, flip?x+1:x+3, y+1-bob, flip, pal);
+    if(st.hasRpg) drawAscii(RPG_OVERLAY, x-1, y+9-bob, flip, pal);
     return;
   }
   const leg=st.leg||0;
@@ -669,7 +689,7 @@ function resetWorld(){
 
 /* 10. 物理 */
 /* 姿态：0 站(40) / 1 蹲(24) / 2 趴(14)，脚底位置恒定 */
-const STANCE_H=[40,24,14];
+const STANCE_H=[40,28,14];
 function setStance(p,s){
   if(p.stance===s) return true;
   const feet=p.y+p.h, nh=STANCE_H[s], ny=feet-nh;
@@ -869,7 +889,9 @@ function updatePlayer(p){
     spawnDust(p.x+p.w/2, p.y+p.h, prevVy>5.5?6:3);
     if(prevVy>6) world.fx.shake=Math.max(world.fx.shake,2);
   }
-  if(p.vx!==0&&p.onGround){ p.animT++; if(p.animT%5===0) p.leg=(p.leg+1)&3; } else if(p.onGround) p.leg=0;
+  /* 用输入方向而不是速度判定 → 顶墙时腿也会迈，不会僵住 */
+  const moving = ax!==0 || Math.abs(p.vx)>0.4;
+  if(moving&&p.onGround){ p.animT++; const cad=p.stance===2?9:(p.stance===1?6:5); if(p.animT%cad===0) p.leg=(p.leg+1)&3; } else if(p.onGround) p.leg=0;
 
   if(p.attack<=TUNE.atkFrom && p.attack>=TUNE.atkTo && p.hitSet){
     const ky = p.prone ? p.y+2 : (p.crouch ? p.y+10 : p.y+14);
